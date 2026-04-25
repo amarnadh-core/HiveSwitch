@@ -1,0 +1,14 @@
+{
+  "required": true,
+  "package": "com.serverless_mc.mixin",
+  "compatibilityLevel": "JAVA_17",
+  "client": [
+    "ScreenMixin",
+    "MinecraftClientMixin",
+    "ConnectScreenMixin",
+    "ServerListPingerMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}
