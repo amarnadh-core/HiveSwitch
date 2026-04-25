@@ -1,0 +1,9 @@
+[project]
+name = "serverless-minecraft-prototype"
+version = "0.1.0"
+description = "Phase 1 helper prototype for a serverless-style Minecraft host migration system."
+requires-python = ">=3.11"
+
+[project.scripts]
+serverless-mc = "helper_app.serverless_mc.cli:main"
+

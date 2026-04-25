@@ -1,0 +1,16 @@
+{
+  "player_name": "player-one",
+  "world_id": "prototype-world",
+  "session_id": "local-session",
+  "local_world_path": "D:/minecrafrserver/world",
+  "cloud_root": "D:/minecrafrserver/.local-cloud",
+  "cache_dir": "D:/minecrafrserver/.cache",
+  "server_dir": "D:/minecrafrserver/.server",
+  "server_jar": "D:/minecrafrserver/server.jar",
+  "java_path": "java",
+  "host_player": "player-one",
+  "zerotier_network_id": "",
+  "helper_host": "127.0.0.1",
+  "helper_port": 8765
+}
+

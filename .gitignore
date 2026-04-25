@@ -1,0 +1,14 @@
+server/
+world/
+logs/
+crash-reports/
+*.jar
+*.log
+.vscode/
+.local-cloud/
+tmpl*/
+__pycache__/
+*.pyc
+.serverless-mc/
+build/
+.gradle/
