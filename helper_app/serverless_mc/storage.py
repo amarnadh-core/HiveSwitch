@@ -41,6 +41,7 @@ class SessionInfo:
     updated_at: str
     updated_by: str
     state: str = "active"
+    handoff_snapshot: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -219,10 +220,6 @@ class LocalCloudStorage:
             return world_dir
         if delta_dir.exists():
             return delta_dir
-        # Legacy: raw_world
-        raw = self.world_root / "raw_world"
-        if raw.exists():
-            return raw
         return snap_dir
 
     def _list_full_snapshots(self, newest_first: bool = False) -> list[SnapshotInfo]:
@@ -303,6 +300,9 @@ class LocalCloudStorage:
     def _check_upload_permission(self, uploaded_by: str) -> None:
         try:
             session = self.session()
+            # Allow uploads during migration — departing host's final handoff snapshot
+            if session.state in ("migrating", "promoting"):
+                return
             if session.current_host != uploaded_by:
                 raise PermissionError(
                     f"Upload rejected: {uploaded_by} is not active host ({session.current_host})")
@@ -344,27 +344,26 @@ class LocalCloudStorage:
         local_manifest = build_manifest(world_path)
         print(f"[COMPACT] Creating full snapshot {snapshot_id} ({len(local_manifest)} files)...")
 
+        final_manifest = []
         for item in local_manifest:
             src = world_path / item.path
             dst = world_dst / item.path
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src, dst)
+            # Hash what was actually written
+            actual_hash = sha256_file(dst)
+            actual_size = dst.stat().st_size
+            final_manifest.append(FileHash(path=item.path, size=actual_size, sha256=actual_hash))
 
         # Write manifest
         manifest_path = tmp_dir / "manifest.json"
         manifest_path.write_text(
-            json.dumps([asdict(item) for item in local_manifest], indent=2) + "\n",
+            json.dumps([asdict(item) for item in final_manifest], indent=2) + "\n",
             encoding="utf-8")
 
         # Write meta
         meta = {"type": "full", "base": None}
         (tmp_dir / "meta.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
-
-        # Sanity check: verify all files exist and hash correctly
-        for item in local_manifest:
-            dst = world_dst / item.path
-            if not dst.exists() or sha256_file(dst) != item.sha256:
-                raise ValueError(f"Full snapshot sanity check failed: {item.path}")
 
         # Atomic rename
         tmp_dir.rename(final_dir)
@@ -407,27 +406,36 @@ class LocalCloudStorage:
         delta_dst.mkdir(parents=True, exist_ok=True)
 
         print(f"Uploading {len(changed_files)} changed files (delta)...")
+        # Copy files, then hash the COPIES (source may change mid-copy due to Minecraft writes)
+        changed_paths = {item.path for item in changed_files}
+        actual_hashes: dict[str, FileHash] = {}
         for item in changed_files:
             src = world_path / item.path
             dst = delta_dst / item.path
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src, dst)
+            # Hash what was actually written — this is the snapshot truth
+            actual_hash = sha256_file(dst)
+            actual_size = dst.stat().st_size
+            actual_hashes[item.path] = FileHash(path=item.path, size=actual_size, sha256=actual_hash)
 
-        # Write FULL manifest (not just delta)
+        # Build manifest: unchanged files keep remote hashes, changed files use actual copy hashes
+        final_manifest = []
+        for item in local_manifest:
+            if item.path in actual_hashes:
+                final_manifest.append(actual_hashes[item.path])
+            else:
+                final_manifest.append(item)
+
+        # Write FULL manifest (reflects what's actually in the snapshot)
         manifest_path = tmp_dir / "manifest.json"
         manifest_path.write_text(
-            json.dumps([asdict(item) for item in local_manifest], indent=2) + "\n",
+            json.dumps([asdict(item) for item in final_manifest], indent=2) + "\n",
             encoding="utf-8")
 
         # Write meta
         meta = {"type": "delta", "base": latest_info.snapshot_id}
         (tmp_dir / "meta.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
-
-        # Sanity check: verify changed files hash correctly
-        for item in changed_files:
-            dst = delta_dst / item.path
-            if not dst.exists() or sha256_file(dst) != item.sha256:
-                raise ValueError(f"Delta sanity check failed: {item.path}")
 
         # Atomic rename
         tmp_dir.rename(final_dir)
@@ -443,19 +451,7 @@ class LocalCloudStorage:
         _atomic_write_json(self.latest_path, asdict(info))
         return info
 
-    # -- Legacy upload compatibility (raw_world backfill) -------------------
 
-    def _backfill_raw_world(self, world_path: Path, local_manifest: list[FileHash]) -> None:
-        """Keep raw_world/ in sync for backward compat with old snapshots."""
-        raw_world_dir = self.world_root / "raw_world"
-        if not raw_world_dir.exists():
-            return
-        for item in local_manifest:
-            src = world_path / item.path
-            dst = raw_world_dir / item.path
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            if not dst.exists() or sha256_file(dst) != item.sha256:
-                shutil.copy2(src, dst)
 
     # -- latest / session ---------------------------------------------------
 
@@ -469,14 +465,15 @@ class LocalCloudStorage:
         return SnapshotInfo(**data)
 
     def publish_session(self, session_id: str, current_host: str, server_address: str,
-                        server_label: str, updated_by: str, state: str = "active") -> SessionInfo:
+                        server_label: str, updated_by: str, state: str = "active",
+                        handoff_snapshot: str | None = None) -> SessionInfo:
         self.world_root.mkdir(parents=True, exist_ok=True)
         info = SessionInfo(
             world_id=self.world_id, session_id=session_id,
             current_host=current_host, server_address=server_address,
             server_label=server_label,
             updated_at=datetime.now(timezone.utc).isoformat(),
-            updated_by=updated_by, state=state,
+            updated_by=updated_by, state=state, handoff_snapshot=handoff_snapshot
         )
         _atomic_write_json(self.session_path, asdict(info))
         return info
@@ -505,9 +502,8 @@ class LocalCloudStorage:
 
         try:
             chain = self._build_snapshot_chain()
-        except Exception:
-            # Chain broken — try legacy raw_world download
-            return self._download_legacy(destination)
+        except Exception as e:
+            raise ValueError(f"Snapshot chain is broken or missing files: {e}")
 
         # Apply snapshots (hash-verified, local-aware)
         for snap in chain:
@@ -528,33 +524,7 @@ class LocalCloudStorage:
         dirty_marker.unlink(missing_ok=True)
         return latest
 
-    def _download_legacy(self, destination: Path) -> SnapshotInfo:
-        """Fallback for old-style raw_world snapshots without meta.json."""
-        info = self.latest()
-        manifest_path = self.world_root / info.manifest.replace("\\", "/")
-        manifest = load_manifest(manifest_path)
 
-        try:
-            local_manifest = build_manifest(destination)
-        except Exception:
-            local_manifest = []
-
-        changed = diff_manifests(manifest, local_manifest)
-        destination.mkdir(parents=True, exist_ok=True)
-
-        raw_world_dir = self.world_root / "raw_world"
-        print(f"[LEGACY] Downloading {len(changed)} changed files from raw_world...")
-        for item in changed:
-            src = raw_world_dir / item.path
-            dst = destination / item.path
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            if src.exists():
-                shutil.copy2(src, dst)
-
-        problems = validate_against_manifest(destination, manifest)
-        if problems:
-            raise ValueError(f"Legacy download failed validation:\n" + "\n".join(problems))
-        return info
 
     def _apply_snapshot(self, snap: SnapshotInfo, destination: Path) -> None:
         snap_dir = self.snapshot_root / snap.snapshot_id

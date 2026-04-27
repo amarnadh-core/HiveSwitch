@@ -10,6 +10,7 @@ from pathlib import Path
 DEFAULT_CONFIG_PATH = Path(".serverless-mc") / "config.json"
 CONFIG_ENV_VAR = "SERVERLESS_MC_CONFIG"
 
+_last_printed_endpoint = ""
 
 @dataclass
 class HelperConfig:
@@ -71,7 +72,7 @@ class HelperConfig:
         return self._normalize_path(self.server_jar)
 
     @property
-    def connect_address(self) -> str:
+    def config_address(self) -> str:
         return f"{self.server_host}:{self.server_port}"
 
     @staticmethod
@@ -151,18 +152,23 @@ class HelperConfig:
         We cannot reliably test this from inside WSL. So we default to
         False unless the user explicitly opts in via env var.
         """
+        global _last_printed_endpoint
         if os.environ.get("SERVERLESS_MC_LOCALHOST_FWD", "").strip() == "1":
             # User explicitly declared localhost forwarding works
             # Do a basic sanity check that port is at least open locally
             if self._probe_port("127.0.0.1", port, timeout=1.0):
                 return True
-            print("[ENDPOINT] SERVERLESS_MC_LOCALHOST_FWD=1 but port not open locally")
+            msg = "[ENDPOINT] SERVERLESS_MC_LOCALHOST_FWD=1 but port not open locally"
+            if _last_printed_endpoint != msg:
+                print(msg)
+                _last_printed_endpoint = msg
             return False
         # Default: do not trust localhost forwarding
         return False
 
     @property
     def advertised_host(self) -> str:
+        global _last_printed_endpoint
         port = self._detect_server_port()
 
         if not self.is_wsl():
@@ -172,17 +178,26 @@ class HelperConfig:
         # WSL: default to WSL VM IP (always reachable from Windows)
         # Only use 127.0.0.1 if user explicitly opts in
         if self._verify_localhost_forwarding(port):
-            print(f"[ENDPOINT] localhost:{port} — forwarding confirmed by user — advertising 127.0.0.1")
+            msg = f"[ENDPOINT] localhost:{port} — forwarding confirmed by user — advertising 127.0.0.1"
+            if _last_printed_endpoint != msg:
+                print(msg)
+                _last_printed_endpoint = msg
             return "127.0.0.1"
 
         # WSL VM IP (reachable from Windows via virtual network)
         wsl_ip = self.default_ipv4()
         if wsl_ip:
-            print(f"[ENDPOINT] Advertising WSL IP {wsl_ip}:{port}")
+            msg = f"[ENDPOINT] Advertising WSL IP {wsl_ip}:{port}"
+            if _last_printed_endpoint != msg:
+                print(msg)
+                _last_printed_endpoint = msg
             return wsl_ip
 
         # Last resort
-        print(f"[ENDPOINT] WARNING: No reachable endpoint found, using {self.server_host}")
+        msg = f"[ENDPOINT] WARNING: No reachable endpoint found, using {self.server_host}"
+        if _last_printed_endpoint != msg:
+            print(msg)
+            _last_printed_endpoint = msg
         return self.server_host
 
     @property

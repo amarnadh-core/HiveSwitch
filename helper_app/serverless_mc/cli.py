@@ -51,11 +51,11 @@ def cmd_connect_info(_: argparse.Namespace) -> None:
     print(f"Player: {config.player_name}")
     print(f"Host: {config.host_player}")
     print(f"Server entry: {config.server_label}")
-    print(f"Minecraft address: {config.connect_address}")
+    print(f"Minecraft address: {config.config_address}")
     if config.is_wsl():
         advertised = config.advertised_address
         print(f"WSL advertised address: {advertised}")
-        if advertised != config.connect_address:
+        if advertised != config.config_address:
             print(f"  (WSL IP detected — localhost forwarding appears unavailable)")
         else:
             print(f"  (localhost forwarding is working)")
@@ -77,7 +77,7 @@ def publish_current_session(state: str = "active") -> None:
 def cmd_publish_session(args: argparse.Namespace) -> None:
     publish_current_session(state=args.state)
     config = load_config()
-    print(f"Published session host {config.host_player} at {config.connect_address}")
+    print(f"Published session host {config.host_player} at {config.config_address}")
 
 
 def cmd_session_info(_: argparse.Namespace) -> None:
@@ -199,9 +199,26 @@ def upload_current_world() -> str:
 
 def sync_current_world() -> str:
     config = load_config()
+    staging_dir = config.server_workdir / ".staging_world"
+    
+    # Phase 1: Freeze and clone (minimize Minecraft pause)
     with _rcon_client_from_config() as client:
+        client.command("save-off")
         client.command("save-all flush")
-    return upload_current_world()
+        time.sleep(0.5)  # Brief settle
+        try:
+            if staging_dir.exists():
+                import shutil
+                shutil.rmtree(staging_dir)
+            import shutil
+            shutil.copytree(config.local_world, staging_dir, ignore=shutil.ignore_patterns("session.lock"))
+        finally:
+            client.command("save-on")
+            
+    # Phase 2: Async upload from the immutable mirror
+    storage = LocalCloudStorage(config.cloud, config.world_id)
+    info = storage.upload_world(staging_dir, config.player_name)
+    return info.snapshot_id
 
 
 def cmd_download_world(args: argparse.Namespace) -> None:
@@ -266,6 +283,16 @@ def cmd_launch_server(args: argparse.Namespace) -> None:
     config = load_config()
     write_server_properties(config.server_workdir)
     
+    # H3 Invariant: verify no owned Java server already running
+    existing = read_pid(config.server_workdir)
+    if existing and _is_pid_alive(existing.get("pid", -1)):
+        owner = existing.get("host_player", "")
+        if owner == config.player_name:
+            print(f"ERROR: You already have a running server (pid={existing['pid']}). Refusing to launch.")
+            return
+        else:
+            print(f"WARNING: Found foreign server pid={existing['pid']} (owner={owner}). Launching anyway may cause corruption.")
+
     # Upload current world to cloud BEFORE launch so standby has latest state
     storage = LocalCloudStorage(config.cloud, config.world_id)
     try:
@@ -277,7 +304,7 @@ def cmd_launch_server(args: argparse.Namespace) -> None:
     process = launch_hidden_server(config.java_path, config.server_jar_path, config.server_workdir, args.memory)
     pid = process.pid
     write_pid(config.server_workdir, pid, host_player=config.host_player)
-    publish_current_session()
+    # publish_current_session()  # B1: Removed to prevent CLI from hijacking migration state
     print(f"Launched hidden server process pid={pid}")
 
 
@@ -379,26 +406,20 @@ def cmd_manual_switch(args: argparse.Namespace) -> None:
     to_host = args.to_host or target_config.player_name
 
     storage = LocalCloudStorage(source_config.cloud, source_config.world_id)
+    try:
+        session = storage.session()
+        if session.current_host != source_config.player_name:
+            print(f"ERROR: You are trying to migrate FROM {source_config.player_name}, but the active host is {session.current_host}.")
+            print(f"Did you forget to set SERVERLESS_MC_CONFIG or pass --config?")
+            sys.exit(1)
+    except FileNotFoundError:
+        pass  # First run, no session yet
     print(f"[DEBUG] Source cloud_root (raw):      {source_config.cloud_root}")
     print(f"[DEBUG] Source cloud_root (resolved):  {storage.cloud_root}")
 
-    # Publish migrating with TARGET host immediately — prevents source helper
-    # from auto-promoting itself when it sees state=migrating
-    try:
-        storage.publish_session(
-            session_id=source_config.session_id,
-            current_host=to_host,
-            server_address="",
-            server_label=target_config.server_label or source_config.server_label,
-            updated_by=source_config.player_name,
-            state="migrating"
-        )
-        print(f"Session state published as: migrating (target={to_host})")
-    except Exception as e:
-        print(f"Could not set migrating state: {e}")
-
     if args.skip_source_stop:
         print("Skipping source stop.")
+        snapshot_id = None
         if args.skip_source_sync:
             print("Skipping source sync.")
         else:
@@ -415,11 +436,27 @@ def cmd_manual_switch(args: argparse.Namespace) -> None:
         from .web import _force_kill_local_server
         _force_kill_local_server(source_config, only_if_owned=True)
         print("Source server stopped.")
+        snapshot_id = None
         if args.skip_source_sync:
             print("Skipping source sync.")
         else:
             snapshot_id = upload_current_world()
             print(f"Source stopped and uploaded snapshot {snapshot_id}.")
+
+    # Transactional handoff: publish migrating state WITH the required snapshot
+    try:
+        storage.publish_session(
+            session_id=source_config.session_id,
+            current_host=to_host,
+            server_address="",
+            server_label=target_config.server_label or source_config.server_label,
+            updated_by=source_config.player_name,
+            state="migrating",
+            handoff_snapshot=snapshot_id
+        )
+        print(f"Session state published as: migrating (target={to_host}, snapshot={snapshot_id})")
+    except Exception as e:
+        print(f"Could not set migrating state: {e}")
 
     # Re-load target config (source sync may have changed cloud state)
     target_config = load_config(target_config_path)
@@ -613,7 +650,6 @@ def build_parser() -> argparse.ArgumentParser:
     switch.add_argument("--port", type=int, default=None, help="Server port override. Auto-detected from server.properties if omitted.")
     switch.add_argument("--memory", default="2G")
     switch.add_argument("--launch", action="store_true")
-    switch.add_argument("--force-stop", action="store_true")
     switch.add_argument("--skip-source-sync", action="store_true")
     switch.add_argument("--skip-source-stop", action="store_true")
     switch.set_defaults(func=cmd_manual_switch)

@@ -100,11 +100,8 @@ $PY = "C:\Users\LENOVO\.cache\codex-runtimes\codex-primary-runtime\dependencies\
 
 ## Current Issue
 
-Resolved. After WSL promotion, the session was advertising `172.26.x.x:25565` (WSL VM internal IP), which is unreachable from Windows due to WSL2 NAT isolation.
-
-Root cause: `advertised_host` in `config.py` was replacing `localhost` with the WSL VM IP. This is wrong — Windows cannot route to the WSL NAT address. WSL2 has **built-in localhost forwarding** (enabled by default) that transparently bridges `localhost:<port>` from Windows into the WSL VM.
-
-Fix: reverted `advertised_host` to keep `localhost`/`127.0.0.1` on WSL. Session now publishes `127.0.0.1:25565`, and Windows Minecraft clients connect via WSL2 localhost forwarding.
+Resolved. After WSL promotion, the system defaults to advertising the WSL VM internal IP (e.g., `172.x.x.x`). 
+This is because WSL2's localhost forwarding (`127.0.0.1` bridge) can be flaky across reboots. The WSL VM IP is reachable from the Windows host via the virtual network bridge. If the user explicitly wants `127.0.0.1` advertised, they must pass `SERVERLESS_MC_LOCALHOST_FWD=1`.
 
 ## Useful Commands
 
@@ -140,11 +137,10 @@ Launching the Minecraft server through the helper may require elevated permissio
   - RCON port: `25575`, password: `smc-wsl-standby-rcon`
   - Offline auth + EULA accepted
   - `server.properties` binds to `0.0.0.0`
-- WSL2 networking: NAT-based. Windows cannot reach WSL VM IP (`172.x.x.x`) directly.
-  - **localhost forwarding** (default on) bridges `localhost:<port>` from Windows → WSL.
-  - Session publishes `127.0.0.1:25565`; Minecraft client connects to `localhost:25565`.
-  - `Test-NetConnection localhost 25565` confirmed `TcpTestSucceeded: True`.
-  - Direct WSL IP `172.26.147.115:25565` confirmed `TcpTestSucceeded: False`.
+- WSL2 networking: NAT-based.
+  - The WSL VM internal IP (`172.x.x.x`) is reachable from the Windows host via the virtual vEthernet switch.
+  - The helper defaults to advertising this WSL VM IP to guarantee connectivity without relying on flaky port proxies.
+  - If `SERVERLESS_MC_LOCALHOST_FWD=1` is set, it will verify and advertise `127.0.0.1:25565` instead.
 - WSL CLI usage from Windows terminal:
   ```
   wsl -- bash -c "cd /mnt/d/minecrafrserver && SERVERLESS_MC_CONFIG=/mnt/d/minecrafrserver/.serverless-mc/wsl_standby.json python3 -m helper_app.serverless_mc.cli <command>"

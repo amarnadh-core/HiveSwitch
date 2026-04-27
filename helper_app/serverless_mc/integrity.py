@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-SKIP_DIRS = {"session.lock"}
+SKIP_FILES = {"session.lock"}
 
 
 @dataclass(frozen=True)
@@ -32,7 +32,7 @@ def build_manifest(root: Path) -> list[FileHash]:
         if not item.is_file():
             continue
         rel = item.relative_to(root).as_posix()
-        if rel == "session.lock":
+        if rel in SKIP_FILES:
             continue
         files.append(FileHash(path=rel, size=item.stat().st_size, sha256=sha256_file(item)))
     return files

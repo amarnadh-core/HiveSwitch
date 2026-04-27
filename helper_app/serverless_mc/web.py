@@ -319,7 +319,19 @@ def _do_promotion(config: HelperConfig, storage: LocalCloudStorage,
     storage.download_world(config.local_world)
 
     print(f"[{tag}] Launching server...")
-    from .minecraft import launch_hidden_server, write_pid, write_server_properties
+    from .minecraft import launch_hidden_server, write_pid, write_server_properties, read_pid
+
+    # H3: Single-instance invariant — refuse to launch if owned Java already alive
+    existing = read_pid(config.server_workdir)
+    if existing and _is_pid_alive(existing.get("pid", -1)):
+        owner = existing.get("host_player", "")
+        if owner == config.player_name:
+            print(f"[{tag}] WARNING: Owned server pid={existing['pid']} still alive — killing before launch")
+            _force_kill_local_server(config, only_if_owned=True)
+        else:
+            print(f"[{tag}] WARNING: Foreign server pid={existing['pid']} (owner={owner}) alive — killing stale process")
+            _force_kill_local_server(config, only_if_owned=False)
+
     write_server_properties(config.server_workdir)
     process = launch_hidden_server(config.java_path, config.server_jar_path, config.server_workdir)
     write_pid(config.server_workdir, process.pid, host_player=config.player_name)
@@ -382,12 +394,16 @@ def background_orchestrator(config: HelperConfig, allow_host_promotion: bool) ->
     DEMOTION_CONFIRM_POLLS = 3           # Polls needed before demotion (unhealthy local)
     DEMOTION_CONFIRM_POLLS_HEALTHY = 5   # Polls needed if local RCON is still healthy
 
+    first_run = True
     while True:
+        if not first_run:
+            time.sleep(5)
+        first_run = False
+
         try:
             try:
                 session = storage.session()
             except (FileNotFoundError, PermissionError, OSError):
-                time.sleep(5)
                 continue
 
             now = datetime.now(timezone.utc)
@@ -439,10 +455,8 @@ def background_orchestrator(config: HelperConfig, allow_host_promotion: bool) ->
                         if time.time() - last_cloud_sync_time > 60.0:
                             last_cloud_sync_time = time.time()
                             try:
-                                from .cli import _rcon_client_from_config
-                                with _rcon_client_from_config() as rcon:
-                                    rcon.command("save-all flush")
-                                storage.upload_world(config.local_world, config.player_name)
+                                from .cli import sync_current_world
+                                sync_current_world()
                                 print("[SYNC] Cloud snapshot updated.")
                             except Exception as e:
                                 print(f"[SYNC] Cloud sync failed: {e}")
@@ -476,10 +490,20 @@ def background_orchestrator(config: HelperConfig, allow_host_promotion: bool) ->
                 elif session.state in ("migrating", "promoting"):
                     # Bug 1: Don't re-enter if already promoting
                     if promoting:
-                        time.sleep(2)
                         continue
                     if not allow_host_promotion:
                         continue
+
+                    # Transactional handoff: Wait for the required snapshot
+                    if session.handoff_snapshot:
+                        try:
+                            latest_snap = storage.latest()
+                            if latest_snap.snapshot_id != session.handoff_snapshot:
+                                print(f"[PROMOTION] Waiting for handoff snapshot {session.handoff_snapshot} (current: {latest_snap.snapshot_id})...")
+                                continue
+                        except Exception:
+                            print(f"[PROMOTION] Waiting for cloud to update latest.json...")
+                            continue
 
                     promoting = True
                     server_ready = False
@@ -523,7 +547,6 @@ def background_orchestrator(config: HelperConfig, allow_host_promotion: bool) ->
                         print(f"[DEMOTION] Suspicion {host_loss_suspicion}/{confirmation_needed}: "
                               f"foreign_host='{foreign}', fresh={foreign_fresh}, "
                               f"newer={foreign_is_newer}, local_healthy={local_healthy}")
-                        time.sleep(5)
                         continue
 
                     # Confirmation threshold reached — double-read revalidation
@@ -533,20 +556,17 @@ def background_orchestrator(config: HelperConfig, allow_host_promotion: bool) ->
                             # False alarm — we're still host
                             print(f"[DEMOTION] Revalidation: I am still host. Cancelling demotion.")
                             host_loss_suspicion = 0
-                            time.sleep(5)
                             continue
-                        # Recheck must also show fresh foreign heartbeat
+                        # Recheck must also show fresh foreign heartbeat (active lease)
                         recheck_age = (datetime.now(timezone.utc) - datetime.fromisoformat(recheck.updated_at)).total_seconds()
-                        if recheck_age > 30.0:
+                        if recheck_age > 15.0:
                             print(f"[DEMOTION] Revalidation: foreign heartbeat stale ({recheck_age:.0f}s). Cancelling demotion.")
                             host_loss_suspicion = 0
-                            time.sleep(5)
                             continue
                         foreign = recheck.current_host
                     except Exception:
                         print(f"[DEMOTION] Revalidation read failed. Cancelling demotion.")
                         host_loss_suspicion = 0
-                        time.sleep(5)
                         continue
 
                     # Demotion confirmed — log full diagnostics then act
@@ -568,7 +588,6 @@ def background_orchestrator(config: HelperConfig, allow_host_promotion: bool) ->
                 # Fix 2: Cooldown only blocks elections, not monitoring
                 if in_cooldown:
                     missed_heartbeats = 0
-                    time.sleep(5)
                     continue
 
                 # Fix 4: Promoting timeout — only if BOTH stuck >90s AND promoter heartbeat stale
@@ -595,46 +614,71 @@ def background_orchestrator(config: HelperConfig, allow_host_promotion: bool) ->
                         pass
 
                     lock_path = storage.world_root / "election.lock"
+                    acquired = False
                     try:
-                        lock_path.touch(exist_ok=False)
+                        fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                        os.write(fd, json.dumps({"time": time.time()}).encode())
+                        os.close(fd)
+                        acquired = True
+                    except FileExistsError:
+                        try:
+                            # Try to read lease time, fallback to file mtime if legacy empty file
+                            lock_text = lock_path.read_text()
+                            if lock_text.strip():
+                                lock_time = json.loads(lock_text).get("time", 0)
+                            else:
+                                lock_time = lock_path.stat().st_mtime
+
+                            if time.time() - lock_time > 60:
+                                lock_path.unlink()
+                                print("[ELECTION] Cleared stale/legacy election lock.")
+                            else:
+                                print("[ELECTION] Another standby won. Resuming.")
+                        except Exception:
+                            # If it's completely unreadable but older than 60s, force clear
+                            try:
+                                if time.time() - lock_path.stat().st_mtime > 60:
+                                    lock_path.unlink()
+                                    print("[ELECTION] Cleared corrupted election lock.")
+                            except OSError:
+                                pass
+                            print("[ELECTION] Another standby won. Resuming.")
+
+                    if acquired:
                         print("\n[ELECTION] Host dead. ELECTION WON!")
 
-                        config.host_player = config.player_name
-                        save_config(config)
-
-                        if allow_host_promotion:
-                            promoting = True
-                            try:
-                                _do_promotion(config, storage, session.session_id,
-                                              session.current_host, "ELECTION")
-                                was_host = True
-                                server_ready = True
-                                last_successful_promotion = time.time()
-                            except Exception as e:
-                                print(f"[ELECTION] Promotion failed: {e}")
-                                promoting = False
-                        else:
-                            storage.publish_session(
-                                session_id=session.session_id,
-                                current_host=config.player_name,
-                                server_address="", server_label=config.server_label,
-                                updated_by=config.player_name, state="migrating"
-                            )
-                            print("[ELECTION] Auto-promotion disabled.")
-
                         try:
-                            lock_path.unlink()
-                        except OSError:
-                            pass
-                        missed_heartbeats = 0
+                            config.host_player = config.player_name
+                            save_config(config)
 
-                    except FileExistsError:
-                        print("[ELECTION] Another standby won. Resuming.")
+                            if allow_host_promotion:
+                                promoting = True
+                                try:
+                                    _do_promotion(config, storage, session.session_id,
+                                                  session.current_host, "ELECTION")
+                                    was_host = True
+                                    server_ready = True
+                                    last_successful_promotion = time.time()
+                                except Exception as e:
+                                    print(f"[ELECTION] Promotion failed: {e}")
+                                    promoting = False
+                            else:
+                                storage.publish_session(
+                                    session_id=session.session_id,
+                                    current_host=config.player_name,
+                                    server_address="", server_label=config.server_label,
+                                    updated_by=config.player_name, state="migrating"
+                                )
+                                print("[ELECTION] Auto-promotion disabled.")
+                        finally:
+                            try:
+                                lock_path.unlink()
+                            except OSError:
+                                pass
                         missed_heartbeats = 0
         except Exception:
             import traceback
             traceback.print_exc()
-        time.sleep(5)
 
 
 def _should_cleanup_pid(config: HelperConfig) -> bool:
@@ -661,12 +705,12 @@ def _should_cleanup_pid(config: HelperConfig) -> bool:
 
 
 def serve(config: HelperConfig, allow_host_promotion: bool = False) -> None:
-    from .cli import stop_current_server
+    from .minecraft import read_pid
 
-    # Cleanup only genuinely stale/orphan servers on startup
+    # Cleanup only genuinely stale/orphan servers on startup (no RCON — immediate kill)
     if _should_cleanup_pid(config):
         print("Cleaning up orphaned server process on startup...")
-        stop_current_server(force=True)
+        _force_kill_local_server(config, only_if_owned=False)
 
     state = HelperState(config)
     orchestrator = threading.Thread(target=background_orchestrator, args=(config, allow_host_promotion), daemon=True)
@@ -681,17 +725,20 @@ def serve(config: HelperConfig, allow_host_promotion: bool = False) -> None:
     def cleanup_on_exit():
         """Kill the managed server ONLY if we still own it."""
         try:
-            if _should_cleanup_pid(config) or (
-                # Also kill if we ARE the host (we launched it, we should clean it)
-                config.host_player == config.player_name
-                and _is_pid_alive((read_pid(config.server_workdir) or {}).get("pid", -1))
-            ):
+            pid_data = read_pid(config.server_workdir)
+            if pid_data is None:
+                return
+            pid = pid_data.get("pid", -1)
+            owner = pid_data.get("host_player", "")
+            if not _is_pid_alive(pid):
+                return
+            # Kill if orphaned OR if we own it
+            if _should_cleanup_pid(config) or owner == config.player_name:
                 print("Cleaning up managed server process on exit...")
-                stop_current_server(force=True)
+                _force_kill_local_server(config, only_if_owned=False)
         except Exception:
             pass
 
-    from .minecraft import read_pid
     atexit.register(cleanup_on_exit)
     
     try:

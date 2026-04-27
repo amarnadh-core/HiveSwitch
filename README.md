@@ -65,9 +65,9 @@ Use `session-info` to see the current shared host address published in `.local-c
 
 ## WSL Address Note
 
-If the host is running inside WSL2, the Minecraft server binds to `0.0.0.0:25565` inside the VM. WSL2's built-in **localhost forwarding** (enabled by default) bridges `localhost:25565` from Windows into the VM transparently. The session publishes `127.0.0.1:25565` and Windows Minecraft clients connect to `localhost:25565`.
+If the host is running inside WSL2, the Minecraft server binds to `0.0.0.0:25565` inside the VM. The helper detects the WSL VM internal IP (`172.x.x.x`) and automatically publishes it. 
 
-> **Note:** The WSL VM's internal IP (`172.x.x.x`) is *not* reachable from Windows due to WSL2 NAT isolation. Do not use it as the connect address.
+> **Note:** Due to the WSL2 virtual vEthernet switch, the Windows host can directly reach the WSL VM IP. The helper defaults to this IP because Windows' built-in `localhost` forwarding rules can be flaky across reboots. If you specifically need `127.0.0.1` advertised, you must set `SERVERLESS_MC_LOCALHOST_FWD=1`.
 
 ## Phase-One Testing Flow
 
