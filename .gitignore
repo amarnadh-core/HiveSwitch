@@ -13,3 +13,6 @@ __pycache__/
 build/
 .gradle/
 .staging_world/
+
+# Allow gradle-wrapper.jar
+!gradle-wrapper.jar
