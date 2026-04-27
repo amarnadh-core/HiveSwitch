@@ -55,7 +55,7 @@ class HelperState:
 
         except FileNotFoundError:
             host_player = self.config.host_player
-            server_address = self.config.connect_address
+            server_address = self.config.config_address
             server_label = self.config.server_label
             state = "local"
         return {
