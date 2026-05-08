@@ -25,7 +25,7 @@ from .minecraft import (
 from .rcon import RconClient
 from .storage import LocalCloudStorage
 from .vpn import join_zerotier
-from .web import serve
+from .web import _is_pid_alive, serve
 
 
 def cmd_init(args: argparse.Namespace) -> None:
