@@ -20,7 +20,7 @@ def get_local_subnet():
     return f"{parts[0]}.{parts[1]}.{parts[2]}.0/24"
 
 def check_helper(ip):
-    url = f"http://{ip}:8765/"
+    url = f"http://{ip}:8765/session"
     try:
         req = urllib.request.Request(url, method="GET")
         with urllib.request.urlopen(req, timeout=1.5) as response:
