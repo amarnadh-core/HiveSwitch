@@ -716,7 +716,7 @@ def serve(config: HelperConfig, allow_host_promotion: bool = False) -> None:
     orchestrator = threading.Thread(target=background_orchestrator, args=(config, allow_host_promotion), daemon=True)
     orchestrator.start()
     
-    server = ThreadingHTTPServer((config.helper_host, config.helper_port), make_handler(state))
+    server = ThreadingHTTPServer(("0.0.0.0", config.helper_port), make_handler(state))
     print(f"Helper API listening on http://{config.helper_host}:{config.helper_port}")
     print(f"Reconnect screen: http://{config.helper_host}:{config.helper_port}/reconnect")
     print(f"Auto-promotion: {'Enabled' if allow_host_promotion else 'Disabled'}")
