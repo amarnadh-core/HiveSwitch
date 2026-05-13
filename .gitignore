@@ -13,6 +13,9 @@ __pycache__/
 build/
 .gradle/
 .staging_world/
+.profiles/
+relay_data/
+cloud_relay.json
 
 # Allow gradle-wrapper.jar
 !gradle-wrapper.jar
