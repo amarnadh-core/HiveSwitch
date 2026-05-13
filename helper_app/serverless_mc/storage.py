@@ -4,10 +4,12 @@ import errno
 import json
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import threading
 import time
+import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -111,6 +113,33 @@ def _is_process_alive(pid: int) -> bool:
             return False
 
 
+def _lock_owner() -> dict:
+    return {
+        "pid": os.getpid(),
+        "platform": sys.platform,
+        "host": socket.gethostname(),
+        "time": time.time(),
+        "nonce": uuid.uuid4().hex,
+    }
+
+
+def _same_lock_owner(data: dict) -> bool:
+    return (
+        data.get("pid") == os.getpid()
+        and data.get("platform") == sys.platform
+        and data.get("host") == socket.gethostname()
+    )
+
+
+def _lock_is_stale(data: dict) -> bool:
+    age = time.time() - float(data.get("time", 0))
+    if age > 60:
+        return True
+    if data.get("platform") != sys.platform or data.get("host") != socket.gethostname():
+        return False
+    return not _is_process_alive(int(data.get("pid", -1)))
+
+
 def _extract_path_from_problem(problem: str) -> str:
     """Extract file path from a validation problem string."""
     # Formats: "missing: path", "size mismatch: path ...", "hash mismatch: path"
@@ -146,13 +175,14 @@ class LocalCloudStorage:
         self.world_root.mkdir(parents=True, exist_ok=True)
         for attempt in range(30):
             try:
+                owner = _lock_owner()
                 fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-                os.write(fd, json.dumps({"pid": os.getpid(), "time": time.time()}).encode())
+                os.write(fd, json.dumps(owner).encode())
                 os.close(fd)
                 # Double-verify ownership (WSL+Windows edge case)
                 try:
                     data = json.loads(lock.read_text())
-                    if data.get("pid") != os.getpid():
+                    if data.get("nonce") != owner["nonce"] or not _same_lock_owner(data):
                         raise RuntimeError("Lock ownership mismatch")
                 except (json.JSONDecodeError, RuntimeError):
                     try:
@@ -164,7 +194,7 @@ class LocalCloudStorage:
             except FileExistsError:
                 try:
                     data = json.loads(lock.read_text())
-                    if time.time() - data.get("time", 0) > 60 or not _is_process_alive(data.get("pid", -1)):
+                    if _lock_is_stale(data):
                         lock.unlink()
                         continue
                 except Exception:
@@ -297,11 +327,26 @@ class LocalCloudStorage:
 
     # -- Upload -------------------------------------------------------------
 
+    def _new_snapshot_id(self) -> str:
+        base = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        candidate = base
+        suffix = 1
+        while (self.snapshot_root / candidate).exists() or (self.snapshot_root / f"{candidate}.tmp").exists():
+            candidate = f"{base}-{suffix}"
+            suffix += 1
+        return candidate
+
     def _check_upload_permission(self, uploaded_by: str) -> None:
         try:
             session = self.session()
             # Allow uploads during migration — departing host's final handoff snapshot
-            if session.state in ("migrating", "promoting"):
+            if session.state == "migrating":
+                allowed = {session.current_host, session.updated_by}
+                if uploaded_by in allowed:
+                    return
+                raise PermissionError(
+                    f"Upload rejected: {uploaded_by} is not part of migration handoff ({sorted(allowed)})")
+            if session.state == "promoting" and session.updated_by == uploaded_by:
                 return
             if session.current_host != uploaded_by:
                 raise PermissionError(
@@ -333,7 +378,7 @@ class LocalCloudStorage:
                 self._release_file_lock(lock)
 
     def _upload_full(self, world_path: Path, uploaded_by: str) -> SnapshotInfo:
-        snapshot_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        snapshot_id = self._new_snapshot_id()
         tmp_dir = self.snapshot_root / f"{snapshot_id}.tmp"
         final_dir = self.snapshot_root / snapshot_id
         world_dst = tmp_dir / "world"
@@ -397,7 +442,7 @@ class LocalCloudStorage:
             print("[STORAGE] No changes detected, skipping snapshot")
             return latest_info
 
-        snapshot_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        snapshot_id = self._new_snapshot_id()
         tmp_dir = self.snapshot_root / f"{snapshot_id}.tmp"
         final_dir = self.snapshot_root / snapshot_id
         delta_dst = tmp_dir / "delta"

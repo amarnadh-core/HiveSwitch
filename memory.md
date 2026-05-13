@@ -2,7 +2,7 @@
 
 ## Current Goal
 
-Build phase one of a hybrid "serverless" Minecraft multiplayer prototype where one player's machine hosts a hidden vanilla dedicated server, world data can be manually uploaded/downloaded, and host control can be manually switched before later automation phases.
+Build and harden the "serverless" Minecraft multiplayer architecture. A Cloud Relay Server is next — an HTTP intermediary that replaces the shared `.local-cloud` folder so helpers on different networks can upload/download snapshots without needing Windows file sharing.
 
 ## Workspace
 
@@ -25,78 +25,47 @@ Build phase one of a hybrid "serverless" Minecraft multiplayer prototype where o
 $PY = "C:\Users\LENOVO\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe"
 ```
 
-## Implemented So Far
+## Current Milestone
+
+**Phase 3 complete. Next: Cloud Relay Server.**
+
+All local-machine and cross-platform (Windows ↔ WSL) features are stable. Two-laptop testing over Wi-Fi has been validated. The system is blocked on the `.local-cloud` shared folder requirement — building an HTTP Cloud Relay removes this dependency.
+
+## Implemented Features
 
 - Python helper CLI with no third-party dependencies.
 - Config loading/saving.
-- Local filesystem-backed cloud storage under `.local-cloud`.
-- World snapshot upload/download using `tar.gz`.
-- SHA-256 manifest validation.
-- Hidden-ish Minecraft server launch.
-- Helper API/reconnect page.
-- Manual host setting.
-- Helper-managed server PID tracking.
+- Local filesystem-backed cloud storage under `.local-cloud` (full + delta file snapshots).
+- SHA-256 manifest validation with repair and rollback recovery.
+- Hidden Minecraft server launch with PID tracking (JSON format: `pid`, `platform`, `host_player`).
+- Helper HTTP API (`/session`, `/reconnect`, `/host-score`, etc.) bound to `0.0.0.0`.
+- Manual host setting via `set-host`.
 - `server-status` and `stop-server` commands.
-- `auth-mode online|offline` command added for switching server authentication mode.
-- RCON client and commands added: `configure-rcon`, `server-command`, `save-world`, `sync-world`. `configure-rcon` generates a random RCON password unless `--password` is supplied.
-- CLI now supports `--config <path>` for separate local player profiles.
-- CLI now supports `create-profile <name>` for creating profile configs without hand-editing JSON.
-- CLI now supports `manual-switch` to sync/stop the source host, download/validate on the target profile, set target host, and optionally launch the target server.
-- CLI now supports `connect-info`, and configs include `server_host`, `server_port`, and `server_label`.
-- Shared session metadata now exists at `.local-cloud/worlds/prototype-world/session.json`.
-- CLI now supports `publish-session` and `session-info`.
-- Web UI updated with automated JS polling for `http://127.0.0.1:8765/session` indicating host migrations seamlessly (Phase 2.1).
-- Fabric 1.20.1 Mod Created using Mixins into `Screen.class` enabling true zero-touch in-game auto reconnects upon seeing the "Migrating..." state (Phase 2.2).
-- Migrated storage layer from saving massive monolithic `world.tar.gz` blobs to Delta Region Syncing using file diffing and granular uploads/downloads (Phase 2.3).
-- Leader Election & Heartbeats: Background orchestrator thread in `serve` monitors `session.json` heartbeat timestamps. Standby helpers detect host death after 3 missed heartbeats (~15s) and race for an atomic `election.lock` file. Winner publishes `migrating` state and optionally auto-promotes with `--allow-host-promotion` (Phase 2.4).
-- Cross-platform process management: `minecraft.py` uses `creationflags` on Windows, `os.setsid` on Linux/WSL. `cli.py` uses `tasklist`/`taskkill` on Windows, `os.kill` on Linux. PID file now stores JSON with `pid`, `platform`, and `host_player` fields (with legacy integer fallback).
+- `auth-mode online|offline` for switching server authentication mode.
+- RCON client: `configure-rcon`, `server-command`, `save-world`, `sync-world`.
+- `--config <path>` for separate local player profiles.
+- `create-profile <name>` for creating profile configs without hand-editing JSON.
+- `manual-switch` to sync/stop source, download/validate on target, set host, and optionally launch.
+- `connect-info`, and configs include `server_host`, `server_port`, `server_label`.
+- Shared session metadata at `.local-cloud/worlds/{world_id}/session.json`.
+- `publish-session` and `session-info` commands.
+- Web reconnect page with automated JS polling for host migrations (Phase 2.1).
+- Fabric 1.20.1 Mod with Mixins for true zero-touch in-game auto reconnects (Phase 2.2).
+- Delta Region Syncing — file-level diffing with granular uploads/downloads (Phase 2.3).
+- Leader Election & Heartbeats — background orchestrator with atomic `election.lock` (Phase 2.4).
+- Cross-platform process management: `creationflags` on Windows, `os.setsid` on Linux/WSL.
+- ZeroTier join hook (`join-vpn`).
 
-## Current Server State
+## 2026-05-13 Code Audit / Cleanup Pass
 
-- Helper config points at the real server folder and jar.
-- `upload-world` succeeded for the real server world using delta region sync logic.
-- `validate-cache` passed for the uploaded snapshot.
-- Helper-managed launch succeeded when run with elevated permissions.
-- Current helper-managed server PID is `3648`.
-- Local connection check to `127.0.0.1:25565` succeeded after relaunch.
-- RCON is enabled on port `25575` with a generated password stored in `server.properties`.
-- `save-world` works through RCON.
-- `sync-world` works through RCON and uploaded snapshot `20260419T175529Z`.
-- `validate-cache` passed against the latest uploaded snapshot.
-- Server log confirms offline mode is active.
-- Same-laptop profile support was tested.
-- Bob profile exists at `D:\minecrafrserver\.serverless-mc\bob.json`.
-- Bob profile downloaded snapshot `20260419T183136Z` to `D:\minecrafrserver\.profiles\bob\world`.
-- Bob profile `validate-cache` passed.
-- Bob profile currently has `host_player` set to `PlayerOne`.
-- Bob profile `server_dir` is `D:\minecrafrserver\.profiles\bob`, so Bob's downloaded world is also Bob's server world.
-- Manual host-switch simulation guide exists at `D:\minecrafrserver\docs\manual-host-switch-simulation.md`.
-- Bob alternate host server folder is prepared at `D:\minecrafrserver\.profiles\bob`.
-- Bob alternate host server port is `25566`.
-- Bob alternate host RCON port is `25576`.
-- Bob alternate host is set to offline auth for TLauncher compatibility.
-- Bob alternate host EULA has not been accepted yet; `D:\minecrafrserver\.profiles\bob\eula.txt` does not exist.
-- User attempted host switch with `.serverless-mc\viperf28.json`, which did not exist. Added `create-profile` command and created `D:\minecrafrserver\.serverless-mc\viperf28.json`.
-- Viperf28 profile root is `D:\minecrafrserver\.profiles\viperf28`.
-- Viperf28 profile server port is `25566`, RCON port is `25576`, offline auth is enabled.
-- Viperf28 downloaded snapshot `20260419T211227Z` and `validate-cache` passed.
-- Viperf28 EULA has not been accepted yet; user should run `configure-server --port 25566 --accept-eula` with the viperf28 config before launch.
-- User later accepted EULA for viperf28 and confirmed host switch worked; viperf28 server currently reported as PID `21708` and port `25566` is reachable.
-- Created `D:\minecrafrserver\.serverless-mc\viperf29.json` for the other TLauncher username.
-- Viperf29 profile root is `D:\minecrafrserver\.profiles\viperf29`, server port `25565`, RCON port `25575`, offline auth enabled.
-- Viperf29 EULA has not been accepted yet for its generated profile folder.
-- `manual-switch` dry run from viperf28 to viperf29 passed with `--skip-source-sync --skip-source-stop`.
-- User ran real `manual-switch` from viperf28 to viperf29 and initially hit region hash mismatches because the old uploader built the manifest before archiving while the server world could still change.
-- Fixed uploader so each manifest hash is computed from the exact bytes written into `world.tar.gz`.
-- Fixed `manual-switch` order so the default flow stops the source server first, then uploads the stopped world as the handoff snapshot.
-- Replaced bad snapshot `20260419T214829Z` with valid snapshot `20260419T215008Z`.
-- Viperf29 downloaded and validated snapshot `20260419T215008Z`.
-- Viperf29 is now the active simulated host on port `25565`, PID `12668`; RCON is live on port `25575`.
-- Viperf28 connect info: label `viperf28 host`, address `127.0.0.1:25566`.
-- Viperf29 connect info: label `viperf29 host`, address `127.0.0.1:25565`.
-- Published shared session metadata says current host is `viperf29`, server entry `viperf29 host`, address `127.0.0.1:25565`.
-- Web `HelperState.session_payload()` was checked from the viperf28 profile and correctly returned host `viperf29`, address `127.0.0.1:25565`.
-- Delta syncing migrated `world.tar.gz` to individual raw file diffing, drastically dropping world upload times.
+- `sync-world` now uses the staging snapshot path instead of uploading the live world folder directly.
+- `manual-switch` now preserves `handoff_snapshot` when publishing cross-platform or standby-promotion migration state.
+- `publish-session` now reports the actual advertised Minecraft address, which matters for WSL hosts.
+- Storage lock metadata now records platform/host/nonce and avoids using local PID checks to invalidate foreign Windows/WSL locks.
+- Snapshot IDs now include microseconds and retry suffixes to avoid same-second collisions.
+- Upload permission during `migrating`/`promoting` is now restricted to the active handoff participants.
+- Fabric template remnants were removed from source: `modid` project naming, example client classes, example mixin config, and mismatched icon path.
+- Fabric session parsing now uses Gson instead of brittle string search.
 
 ## Current Issue
 
@@ -175,9 +144,26 @@ python3 -m helper_app.serverless_mc.cli session-info
 - WSL heartbeat thread is refreshing `session.json` continuously.
 - Full Windows→Linux automatic cross-platform host migration proven.
 
+## Multi-Laptop Test Results (2026-04-27 to 2026-05-08)
+
+- Two-laptop testing over home Wi-Fi validated (192.168.1.x subnet).
+- ZeroTier network `2873fd00f2f6a6be` joined on both laptops.
+- Helper HTTP API re-bound from `127.0.0.1` to `0.0.0.0` so network peers can query `/session`.
+- Network scanner (`check_standbys.py`) confirmed cross-laptop helper discovery.
+- Blocked on `.local-cloud` shared folder — Windows File Sharing works but is fragile; Cloud Relay Server is the permanent fix.
+
+## Historical Notes
+
+These are older milestones that have been superseded but kept for reference.
+
+- **tar.gz era**: The original storage layer uploaded/downloaded the entire world as a single `world.tar.gz` blob. This was replaced by per-file full + delta snapshots in Phase 2.3.
+- **Manifest hashing bug**: The original uploader hashed files before archiving, causing mismatches when Minecraft wrote region files mid-copy. Fixed by hashing the bytes actually written to the snapshot.
+- **Bob/viperf28 profiles**: Early same-laptop test profiles created during Phase 1 development. Bob used port `25566`, viperf28 also used `25566`. These are still present in `.serverless-mc/` but are not actively used.
+- **connect_address rename**: `connect_address` was renamed to `config_address` during cleanup to distinguish between configuration values and actual advertised network addresses.
+
 ## Next Steps
 
-1. Test Minecraft client reconnecting to the WSL-hosted server at `localhost:25565`.
-2. Test reverse failover: WSL host active → Windows standby takes over.
-3. Later, set up ZeroTier and test a second laptop joining through the host's ZeroTier IP.
-4. For multi-machine support, add `netsh interface portproxy` automation so remote players can reach the WSL server.
+1. Build the Cloud Relay Server (HTTP intermediary for snapshots/sessions).
+2. Integrate the helper CLI with the relay server (new `RemoteCloudStorage` backend).
+3. Test end-to-end handoff over the relay instead of shared filesystem.
+4. Move process helpers (`_is_pid_alive`, `_force_kill_local_server`) out of `web.py` into `minecraft.py` or `process.py`.

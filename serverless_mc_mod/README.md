@@ -1,9 +1,14 @@
-# Example Mod
+# Serverless MC Helper Mod
 
-## Setup
+Fabric client mod for the Serverless MC prototype.
 
-For setup instructions, please see the [Fabric Documentation page](https://docs.fabricmc.net/develop/getting-started/creating-a-project#setting-up) related to the IDE that you are using.
+The mod polls the local helper API, falls back to the shared `session.json`
+file when the helper API is unavailable, redirects local server entries to the
+currently active host, and shows a migration screen while a host handoff is in
+progress.
 
-## License
+Build with:
 
-This template is available under the CC0 license. Feel free to learn from it and incorporate it in your own projects.
+```powershell
+.\gradlew.bat build
+```

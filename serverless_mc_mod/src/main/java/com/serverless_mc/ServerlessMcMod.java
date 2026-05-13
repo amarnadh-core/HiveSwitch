@@ -1,5 +1,8 @@
 package com.serverless_mc;
 
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
@@ -157,8 +160,16 @@ public class ServerlessMcMod implements ClientModInitializer {
      * Process a session JSON string from any source (HTTP response or disk file).
      */
     private void processSessionJson(String body, String source) {
-        String stateStr = extractJsonValue(body, "state");
-        String addressStr = extractJsonValue(body, "server_address");
+        JsonObject session;
+        try {
+            session = JsonParser.parseString(body).getAsJsonObject();
+        } catch (Exception e) {
+            LOGGER.warn("[SMC] Ignoring invalid session JSON from {}: {}", source, e.getMessage());
+            return;
+        }
+
+        String stateStr = getString(session, "state");
+        String addressStr = getString(session, "server_address");
 
         if (stateStr != null) {
             String oldState = currentSession.state;
@@ -263,13 +274,15 @@ public class ServerlessMcMod implements ClientModInitializer {
         });
     }
 
-    static String extractJsonValue(String json, String key) {
-        String search = "\"" + key + "\": \"";
-        int start = json.indexOf(search);
-        if (start == -1) return null;
-        start += search.length();
-        int end = json.indexOf("\"", start);
-        if (end == -1) return null;
-        return json.substring(start, end);
+    private static String getString(JsonObject json, String key) {
+        JsonElement value = json.get(key);
+        if (value == null || value.isJsonNull()) {
+            return null;
+        }
+        try {
+            return value.getAsString();
+        } catch (UnsupportedOperationException | IllegalStateException e) {
+            return null;
+        }
     }
 }

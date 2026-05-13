@@ -77,7 +77,7 @@ def publish_current_session(state: str = "active") -> None:
 def cmd_publish_session(args: argparse.Namespace) -> None:
     publish_current_session(state=args.state)
     config = load_config()
-    print(f"Published session host {config.host_player} at {config.config_address}")
+    print(f"Published session host {config.host_player} at {config.advertised_address}")
 
 
 def cmd_session_info(_: argparse.Namespace) -> None:
@@ -183,11 +183,8 @@ def cmd_save_world(_: argparse.Namespace) -> None:
 
 def cmd_sync_world(_: argparse.Namespace) -> None:
     config = load_config()
-    with _rcon_client_from_config() as client:
-        client.command("save-all flush")
-    storage = LocalCloudStorage(config.cloud, config.world_id)
-    info = storage.upload_world(config.local_world, config.player_name)
-    print(f"Saved and uploaded snapshot {info.snapshot_id} for {info.world_id}")
+    snapshot_id = sync_current_world()
+    print(f"Saved and uploaded snapshot {snapshot_id} for {config.world_id}")
 
 
 def upload_current_world() -> str:
@@ -414,9 +411,6 @@ def cmd_manual_switch(args: argparse.Namespace) -> None:
             sys.exit(1)
     except FileNotFoundError:
         pass  # First run, no session yet
-    print(f"[DEBUG] Source cloud_root (raw):      {source_config.cloud_root}")
-    print(f"[DEBUG] Source cloud_root (resolved):  {storage.cloud_root}")
-
     if args.skip_source_stop:
         print("Skipping source stop.")
         snapshot_id = None
@@ -461,9 +455,6 @@ def cmd_manual_switch(args: argparse.Namespace) -> None:
     # Re-load target config (source sync may have changed cloud state)
     target_config = load_config(target_config_path)
     storage = LocalCloudStorage(target_config.cloud, target_config.world_id)
-    print(f"[DEBUG] Target cloud_root (raw):      {target_config.cloud_root}")
-    print(f"[DEBUG] Target cloud_root (resolved):  {storage.cloud_root}")
-    print(f"[DEBUG] Target latest exists:           {storage.latest_path.exists()}")
     info = storage.download_world(target_config.local_world)
     print(f"Target downloaded snapshot {info.snapshot_id}.")
 
@@ -500,7 +491,8 @@ def cmd_manual_switch(args: argparse.Namespace) -> None:
                 server_address="",
                 server_label=target_config.server_label,
                 updated_by=source_config.player_name,
-                state="migrating"
+                state="migrating",
+                handoff_snapshot=snapshot_id
             )
             print("Session published as migrating (standby should auto-promote).")
             return
@@ -514,7 +506,8 @@ def cmd_manual_switch(args: argparse.Namespace) -> None:
             server_address="",
             server_label=target_config.server_label,
             updated_by=source_config.player_name,
-            state="migrating"
+            state="migrating",
+            handoff_snapshot=snapshot_id
         )
         print("Session published as migrating. Target standby helper should auto-promote.")
         print("If not, start the target helper with: serve --allow-host-promotion")

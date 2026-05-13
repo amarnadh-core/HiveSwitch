@@ -1,88 +1,90 @@
-# Serverless Minecraft Prototype
+# HiveSwitch — Serverless Minecraft
 
-This workspace contains the phase-one helper prototype for the architecture described in `minecraft_serverless_server_architecture_spec_v_1 (2).md`.
+A "serverless" Minecraft multiplayer system where one player's machine hosts a hidden vanilla dedicated server. World data is automatically synced to a shared cloud, and host control can be transferred between machines — manually or automatically via leader election.
 
-Phase one is intentionally simple:
+## Features
 
-- Manual host selection
-- ZeroTier join hook
-- Basic world upload/download through a filesystem-backed "cloud" folder
-- SHA-256 manifest validation
-- Hidden dedicated server launch
-- Localhost HTTP helper API
-- Simple reconnect screen
+- **Delta Snapshots** — Only changed region files are uploaded/downloaded, not the entire world.
+- **Leader Election** — Standby helpers detect host death via heartbeat and automatically promote.
+- **Fabric Client Mod** — Zero-touch in-game reconnection during host migrations.
+- **Cross-Platform** — Windows ↔ WSL ↔ Linux host migration.
+- **ZeroTier Support** — Multi-network play via `join-vpn`.
 
-The storage layer uses `.local-cloud/` for now. Put that folder on a shared path, sync tool, or mounted object-storage adapter when testing across machines.
+The storage layer currently uses `.local-cloud/` on a shared filesystem. A Cloud Relay Server (HTTP intermediary) is next.
 
 ## Quick Start
 
 ```powershell
-$PY = "C:\Users\LENOVO\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe"
-& $PY -m helper_app.serverless_mc.cli init --player-name Alice --world-id demo-world
-& $PY -m helper_app.serverless_mc.cli show-config
+python -m helper_app.serverless_mc.cli init --player-name Alice --world-id demo-world
+python -m helper_app.serverless_mc.cli show-config
 ```
-
-If you install Python 3.11 or newer and add it to PATH, you can use `python` instead of `& $PY`.
 
 Edit `.serverless-mc/config.json` and set:
 
 - `local_world_path` to the world folder you want to share
-- `server_jar` to a vanilla Minecraft server jar
+- `server_jar` to a Fabric server jar (1.20.1)
 - `zerotier_network_id` to your network ID, if ZeroTier is installed
 - `cloud_root` to a shared folder both players can access
 
-Start the helper API:
+Start the helper API with automatic host promotion:
 
 ```powershell
-& $PY -m helper_app.serverless_mc.cli serve
+python -m helper_app.serverless_mc.cli serve --allow-host-promotion
 ```
 
-Open `http://127.0.0.1:8765/reconnect` for the prototype reconnect screen.
+Open `http://127.0.0.1:8765/reconnect` for the reconnect screen.
 
 ## Common Commands
 
 ```powershell
-& $PY -m helper_app.serverless_mc.cli join-vpn
-& $PY -m helper_app.serverless_mc.cli connect-info
-& $PY -m helper_app.serverless_mc.cli session-info
-& $PY -m helper_app.serverless_mc.cli publish-session
-& $PY -m helper_app.serverless_mc.cli upload-world
-& $PY -m helper_app.serverless_mc.cli download-world
-& $PY -m helper_app.serverless_mc.cli validate-cache
-& $PY -m helper_app.serverless_mc.cli set-host Bob
-& $PY -m helper_app.serverless_mc.cli auth-mode offline
-& $PY -m helper_app.serverless_mc.cli configure-rcon
-& $PY -m helper_app.serverless_mc.cli launch-server --memory 2G
-& $PY -m helper_app.serverless_mc.cli server-status
-& $PY -m helper_app.serverless_mc.cli save-world
-& $PY -m helper_app.serverless_mc.cli sync-world
-& $PY -m helper_app.serverless_mc.cli stop-server
+python -m helper_app.serverless_mc.cli join-vpn
+python -m helper_app.serverless_mc.cli connect-info
+python -m helper_app.serverless_mc.cli session-info
+python -m helper_app.serverless_mc.cli publish-session
+python -m helper_app.serverless_mc.cli upload-world
+python -m helper_app.serverless_mc.cli download-world
+python -m helper_app.serverless_mc.cli validate-cache
+python -m helper_app.serverless_mc.cli set-host Bob
+python -m helper_app.serverless_mc.cli auth-mode offline
+python -m helper_app.serverless_mc.cli configure-rcon
+python -m helper_app.serverless_mc.cli launch-server --memory 2G
+python -m helper_app.serverless_mc.cli server-status
+python -m helper_app.serverless_mc.cli save-world
+python -m helper_app.serverless_mc.cli sync-world
+python -m helper_app.serverless_mc.cli stop-server
+python -m helper_app.serverless_mc.cli manual-switch --to-config .serverless-mc/target.json --launch
 ```
 
-Use `auth-mode offline` only for trusted private testing with clients that cannot verify Microsoft/Mojang sessions. Use `auth-mode online` for normal authenticated vanilla accounts.
-Use `configure-rcon` before launching the server if you want graceful save/stop commands. It generates a random RCON password unless you pass `--password`.
-Use `session-info` to see the current shared host address published in `.local-cloud`.
+Use `auth-mode offline` only for trusted private testing with clients that cannot verify Microsoft/Mojang sessions.
+Use `configure-rcon` before launching the server if you want graceful save/stop commands.
+
+## Network Scanner
+
+Scan the local network for running helpers:
+
+```powershell
+python check_standbys.py
+python check_standbys.py --config .serverless-mc/viperf29.json
+python check_standbys.py --extra-ips 10.136.97.35
+```
 
 ## WSL Address Note
 
 If the host is running inside WSL2, the Minecraft server binds to `0.0.0.0:25565` inside the VM. The helper detects the WSL VM internal IP (`172.x.x.x`) and automatically publishes it. 
 
-> **Note:** Due to the WSL2 virtual vEthernet switch, the Windows host can directly reach the WSL VM IP. The helper defaults to this IP because Windows' built-in `localhost` forwarding rules can be flaky across reboots. If you specifically need `127.0.0.1` advertised, you must set `SERVERLESS_MC_LOCALHOST_FWD=1`.
+> **Note:** The helper defaults to the WSL VM IP because Windows' built-in `localhost` forwarding can be flaky across reboots. If you specifically need `127.0.0.1` advertised, set `SERVERLESS_MC_LOCALHOST_FWD=1`.
 
-## Phase-One Testing Flow
+## Multi-Laptop Setup
 
-1. Both players join the same ZeroTier network.
-2. Player A sets themselves as host and uploads the world.
-3. Player A launches the hidden server.
-4. Player B downloads the latest world snapshot for validation/cache.
-5. Player B connects Minecraft to Player A's VPN IP on port `25565`.
-6. To manually switch hosts, Player A uploads the latest world, Player B downloads it, both configs run `set-host Bob`, and Player B launches the server.
-
-This proves the phase-one exit criteria. Phase 2 features such as **Reconnect Automation (Fabric Mod)** and **Dirty Region Deltas (Object storage)** are implemented and available for testing. Next is automatic migration and leases.
+1. Clone this repo on both machines.
+2. Place the Fabric server jar in `server/server.jar`.
+3. Run `python -m helper_app.serverless_mc.cli init --player-name <name> --world-id prototype-world` on each.
+4. Share the `.local-cloud/` folder between machines (Windows File Sharing, Dropbox, etc.), or wait for the Cloud Relay Server.
+5. Copy `modid-1.0.0.jar` from `serverless_mc_mod/build/libs/` into each client's Minecraft `mods/` folder (along with Fabric API).
+6. Run `serve --allow-host-promotion` on both — the helper on the standby machine will auto-promote if the active host goes down.
 
 ## Same-Laptop Testing
 
 If a second laptop is not available, use [same-laptop-test.md](docs/same-laptop-test.md). It uses `--config` to simulate a second player profile against the same local cloud snapshot.
 
-For the manual host-switch milestone, use [manual-host-switch-simulation.md](docs/manual-host-switch-simulation.md). It runs the simulated new host on port `25566`.
-The helper also includes `manual-switch` to bundle the phase-one handoff steps once both profiles are prepared.
+For the manual host-switch milestone, use [manual-host-switch-simulation.md](docs/manual-host-switch-simulation.md).
