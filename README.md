@@ -9,8 +9,9 @@ A "serverless" Minecraft multiplayer system where one player's machine hosts a h
 - **Fabric Client Mod** — Zero-touch in-game reconnection during host migrations.
 - **Cross-Platform** — Windows ↔ WSL ↔ Linux host migration.
 - **ZeroTier Support** — Multi-network play via `join-vpn`.
+- **Cloud Relay** — Optional HTTP storage/session/election backend for machines that cannot share `.local-cloud/`.
 
-The storage layer currently uses `.local-cloud/` on a shared filesystem. A Cloud Relay Server (HTTP intermediary) is next.
+By default the storage layer uses `.local-cloud/` on a shared filesystem. For different networks or laptops without file sharing, run the Cloud Relay Server and configure helpers with `configure-relay`.
 
 ## Quick Start
 
@@ -38,6 +39,7 @@ Open `http://127.0.0.1:8765/reconnect` for the reconnect screen.
 
 ```powershell
 python -m helper_app.serverless_mc.cli join-vpn
+python -m helper_app.serverless_mc.cli configure-relay --url http://relay-host:9000 --api-key <key>
 python -m helper_app.serverless_mc.cli connect-info
 python -m helper_app.serverless_mc.cli session-info
 python -m helper_app.serverless_mc.cli publish-session
@@ -68,6 +70,27 @@ python check_standbys.py --config .serverless-mc/viperf29.json
 python check_standbys.py --extra-ips 10.136.97.35
 ```
 
+## Cloud Relay
+
+Start a relay server:
+
+```powershell
+python -m cloud_relay.server init
+python -m cloud_relay.server
+```
+
+Configure each helper to use it:
+
+```powershell
+python -m helper_app.serverless_mc.cli configure-relay --url http://<relay-ip>:9000 --api-key <key>
+```
+
+Disable relay storage and return to `.local-cloud/`:
+
+```powershell
+python -m helper_app.serverless_mc.cli configure-relay --disable
+```
+
 ## WSL Address Note
 
 If the host is running inside WSL2, the Minecraft server binds to `0.0.0.0:25565` inside the VM. The helper detects the WSL VM internal IP (`172.x.x.x`) and automatically publishes it. 
@@ -79,8 +102,8 @@ If the host is running inside WSL2, the Minecraft server binds to `0.0.0.0:25565
 1. Clone this repo on both machines.
 2. Place the Fabric server jar in `server/server.jar`.
 3. Run `python -m helper_app.serverless_mc.cli init --player-name <name> --world-id prototype-world` on each.
-4. Share the `.local-cloud/` folder between machines (Windows File Sharing, Dropbox, etc.), or wait for the Cloud Relay Server.
-5. Copy `modid-1.0.0.jar` from `serverless_mc_mod/build/libs/` into each client's Minecraft `mods/` folder (along with Fabric API).
+4. Share the `.local-cloud/` folder between machines, or configure both helpers to use the Cloud Relay Server.
+5. Copy `serverless_mc-1.0.0.jar` from `serverless_mc_mod/build/libs/` into each client's Minecraft `mods/` folder (along with Fabric API).
 6. Run `serve --allow-host-promotion` on both — the helper on the standby machine will auto-promote if the active host goes down.
 
 ## Same-Laptop Testing

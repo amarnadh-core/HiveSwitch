@@ -12,8 +12,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from .config import HelperConfig, current_config_path, save_config
-from .storage import LocalCloudStorage
+from .config import HelperConfig, current_config_path, make_storage, save_config
 
 
 class HelperState:
@@ -28,7 +27,7 @@ class HelperState:
         return self.config.host_player == self.config.player_name
 
     def session_payload(self) -> dict[str, Any]:
-        storage = LocalCloudStorage(self.config.cloud, self.config.world_id)
+        storage = make_storage(self.config)
         try:
             shared = storage.session()
             host_player = shared.current_host
@@ -98,7 +97,7 @@ def make_handler(state: HelperState):
             elif path == "/reconnect":
                 self._reconnect_page()
             elif path == "/latest-snapshot":
-                storage = LocalCloudStorage(state.config.cloud, state.config.world_id)
+                storage = make_storage(state.config)
                 try:
                     self._json(200, storage.latest().__dict__)
                 except FileNotFoundError as exc:
@@ -298,7 +297,7 @@ def _force_kill_local_server(config: HelperConfig, only_if_owned: bool = True) -
         pass
 
 
-def _do_promotion(config: HelperConfig, storage: LocalCloudStorage,
+def _do_promotion(config: HelperConfig, storage,
                   session_id: str, old_host: str, tag: str) -> bool:
     """Two-phase promotion. Authority only committed after server is verified ready.
     
@@ -371,7 +370,7 @@ def _do_promotion(config: HelperConfig, storage: LocalCloudStorage,
 
 
 def background_orchestrator(config: HelperConfig, allow_host_promotion: bool) -> None:
-    storage = LocalCloudStorage(config.cloud, config.world_id)
+    storage = make_storage(config)
     missed_heartbeats = 0
     last_save_time = time.time()
     last_cloud_sync_time = time.time()
@@ -613,36 +612,10 @@ def background_orchestrator(config: HelperConfig, allow_host_promotion: bool) ->
                     except Exception:
                         pass
 
-                    lock_path = storage.world_root / "election.lock"
-                    acquired = False
-                    try:
-                        fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-                        os.write(fd, json.dumps({"time": time.time()}).encode())
-                        os.close(fd)
-                        acquired = True
-                    except FileExistsError:
-                        try:
-                            # Try to read lease time, fallback to file mtime if legacy empty file
-                            lock_text = lock_path.read_text()
-                            if lock_text.strip():
-                                lock_time = json.loads(lock_text).get("time", 0)
-                            else:
-                                lock_time = lock_path.stat().st_mtime
-
-                            if time.time() - lock_time > 60:
-                                lock_path.unlink()
-                                print("[ELECTION] Cleared stale/legacy election lock.")
-                            else:
-                                print("[ELECTION] Another standby won. Resuming.")
-                        except Exception:
-                            # If it's completely unreadable but older than 60s, force clear
-                            try:
-                                if time.time() - lock_path.stat().st_mtime > 60:
-                                    lock_path.unlink()
-                                    print("[ELECTION] Cleared corrupted election lock.")
-                            except OSError:
-                                pass
-                            print("[ELECTION] Another standby won. Resuming.")
+                    acquired, lock_data = storage.try_election(config.player_name)
+                    if not acquired:
+                        holder = lock_data.get("candidate", "another standby") if isinstance(lock_data, dict) else "another standby"
+                        print(f"[ELECTION] {holder} won. Resuming.")
 
                     if acquired:
                         print("\n[ELECTION] Host dead. ELECTION WON!")
@@ -671,10 +644,7 @@ def background_orchestrator(config: HelperConfig, allow_host_promotion: bool) ->
                                 )
                                 print("[ELECTION] Auto-promotion disabled.")
                         finally:
-                            try:
-                                lock_path.unlink()
-                            except OSError:
-                                pass
+                            storage.release_election(config.player_name)
                         missed_heartbeats = 0
         except Exception:
             import traceback

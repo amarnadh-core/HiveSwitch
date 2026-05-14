@@ -30,6 +30,8 @@ class HelperConfig:
     server_host: str = "127.0.0.1"
     server_port: int = 25565
     server_label: str = "Serverless MC"
+    relay_url: str = ""
+    relay_api_key: str = ""
 
     @staticmethod
     def _normalize_path(raw: str) -> Path:
@@ -238,6 +240,8 @@ def load_config(path: Path | None = None) -> HelperConfig:
     data.setdefault("server_host", "127.0.0.1")
     data.setdefault("server_port", 25565)
     data.setdefault("server_label", "Serverless MC")
+    data.setdefault("relay_url", "")
+    data.setdefault("relay_api_key", "")
     return HelperConfig(**data)
 
 
@@ -245,3 +249,13 @@ def save_config(config: HelperConfig, path: Path | None = None) -> None:
     path = current_config_path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(asdict(config), indent=2) + "\n", encoding="utf-8")
+
+
+def make_storage(config: HelperConfig):
+    """Factory: return RemoteCloudStorage if relay_url is set, else LocalCloudStorage."""
+    if config.relay_url:
+        from .remote_storage import RemoteCloudStorage
+        return RemoteCloudStorage(config.relay_url, config.world_id, config.relay_api_key)
+    else:
+        from .storage import LocalCloudStorage
+        return LocalCloudStorage(config.cloud, config.world_id)

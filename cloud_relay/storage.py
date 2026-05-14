@@ -23,8 +23,18 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from pathlib import Path
+
+
+_SAFE_ID = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def _safe_id(value: str, label: str) -> str:
+    if not value or not _SAFE_ID.match(value):
+        raise ValueError(f"Invalid {label}: {value!r}")
+    return value
 
 
 class RelayStorage:
@@ -37,6 +47,7 @@ class RelayStorage:
     # -- Path helpers -------------------------------------------------------
 
     def world_dir(self, world_id: str) -> Path:
+        world_id = _safe_id(world_id, "world_id")
         return self.data_dir / "worlds" / world_id
 
     def session_path(self, world_id: str) -> Path:
@@ -49,6 +60,7 @@ class RelayStorage:
         return self.world_dir(world_id) / "election.lock"
 
     def snapshot_dir(self, world_id: str, snapshot_id: str) -> Path:
+        snapshot_id = _safe_id(snapshot_id, "snapshot_id")
         return self.world_dir(world_id) / "snapshots" / snapshot_id
 
     def snapshot_file(self, world_id: str, snapshot_id: str, rel_path: str) -> Path:
@@ -146,7 +158,7 @@ class RelayStorage:
             raise ValueError(f"File too large: {len(data)} bytes (max {max_bytes})")
         path = self.snapshot_file(world_id, snapshot_id, rel_path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp = path.with_suffix(path.suffix + f".{os.getpid()}.{time.time_ns()}.tmp")
         tmp.write_bytes(data)
         tmp.replace(path)
 

@@ -50,7 +50,12 @@ def cmd_serve(args: argparse.Namespace) -> None:
         config.port = args.port
 
     storage = RelayStorage(config.data_path)
-    handler = make_handler(storage, config.api_key)
+    handler = make_handler(
+        storage,
+        config.api_key,
+        max_upload_bytes=config.max_upload_bytes,
+        max_snapshots_per_world=config.max_snapshots_per_world,
+    )
 
     server = ThreadingHTTPServer((config.host, config.port), handler)
 

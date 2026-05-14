@@ -27,11 +27,13 @@ $PY = "C:\Users\LENOVO\.cache\codex-runtimes\codex-primary-runtime\dependencies\
 
 ## Current Milestone
 
-**Phase 3 complete. Next: Cloud Relay Server.**
+**Phase 4 in progress: Cloud Relay Server.**
 
 All local-machine and cross-platform (Windows ↔ WSL) features are stable. Two-laptop testing over Wi-Fi has been validated. The system is blocked on the `.local-cloud` shared folder requirement — building an HTTP Cloud Relay removes this dependency.
 
 ## Implemented Features
+
+Relay update: the HTTP Cloud Relay is now implemented locally and has passed integration tests. The remaining proof step is a real two-laptop handoff using the relay instead of a shared `.local-cloud` folder.
 
 - Python helper CLI with no third-party dependencies.
 - Config loading/saving.
@@ -55,6 +57,9 @@ All local-machine and cross-platform (Windows ↔ WSL) features are stable. Two-
 - Leader Election & Heartbeats — background orchestrator with atomic `election.lock` (Phase 2.4).
 - Cross-platform process management: `creationflags` on Windows, `os.setsid` on Linux/WSL.
 - ZeroTier join hook (`join-vpn`).
+- Cloud Relay Server (`cloud_relay`) with HTTP session/latest/snapshot/election endpoints.
+- Helper storage factory switches between local `.local-cloud` and `RemoteCloudStorage` when `relay_url` is configured.
+- `configure-relay` CLI command enables/disables relay storage in helper configs.
 
 ## 2026-05-13 Code Audit / Cleanup Pass
 
@@ -66,6 +71,17 @@ All local-machine and cross-platform (Windows ↔ WSL) features are stable. Two-
 - Upload permission during `migrating`/`promoting` is now restricted to the active handoff participants.
 - Fabric template remnants were removed from source: `modid` project naming, example client classes, example mixin config, and mismatched icon path.
 - Fabric session parsing now uses Gson instead of brittle string search.
+
+## 2026-05-14 Cloud Relay Pass
+
+- Added/finished HTTP-backed `RemoteCloudStorage` integration for helper commands and auto-promotion.
+- Local and remote storage now expose a common election API (`try_election`, `release_election`), removing local-only `election.lock` access from the web orchestrator.
+- Relay server now enforces configured upload-size and snapshot-retention limits from `cloud_relay.json`.
+- Relay storage now validates `world_id` and `snapshot_id` path components to prevent traversal through encoded URL paths.
+- Remote uploads now hash the bytes actually sent to the relay, matching the local snapshot safety model.
+- Added `cloud-relay` script entry and helper `configure-relay` command.
+- `test_relay_integration.py` is self-contained: starts a temporary relay, round-trips session data, uploads full + delta snapshots, downloads/validates, and tests election locking.
+- Verification passed with bundled Python: `compileall`, CLI help, relay help, and all 7 relay integration tests.
 
 ## Current Issue
 
@@ -163,7 +179,6 @@ These are older milestones that have been superseded but kept for reference.
 
 ## Next Steps
 
-1. Build the Cloud Relay Server (HTTP intermediary for snapshots/sessions).
-2. Integrate the helper CLI with the relay server (new `RemoteCloudStorage` backend).
-3. Test end-to-end handoff over the relay instead of shared filesystem.
-4. Move process helpers (`_is_pid_alive`, `_force_kill_local_server`) out of `web.py` into `minecraft.py` or `process.py`.
+1. Run real two-laptop handoff over the Cloud Relay instead of shared filesystem.
+2. Confirm auto-promotion over relay with both helpers using `serve --allow-host-promotion`.
+3. Move process helpers (`_is_pid_alive`, `_force_kill_local_server`) out of `web.py` into `minecraft.py` or `process.py`.

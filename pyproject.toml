@@ -6,4 +6,4 @@ requires-python = ">=3.11"
 
 [project.scripts]
 serverless-mc = "helper_app.serverless_mc.cli:main"
-
+cloud-relay = "cloud_relay.server:main"

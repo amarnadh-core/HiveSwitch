@@ -16,6 +16,18 @@ python -m cloud_relay.server
 
 The server will print the API key on first init. Share it with your helpers.
 
+Configure a helper:
+
+```powershell
+python -m helper_app.serverless_mc.cli configure-relay --url http://<relay-ip>:9000 --api-key <key>
+```
+
+Run the self-contained integration test:
+
+```powershell
+python test_relay_integration.py
+```
+
 ## Config
 
 `cloud_relay.json`:

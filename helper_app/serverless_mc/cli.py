@@ -9,7 +9,7 @@ import time
 from dataclasses import replace
 from pathlib import Path
 
-from .config import CONFIG_ENV_VAR, HelperConfig, current_config_path, default_config, load_config, save_config
+from .config import CONFIG_ENV_VAR, HelperConfig, current_config_path, default_config, load_config, make_storage, save_config
 from .integrity import build_manifest, write_manifest
 from .minecraft import (
     launch_hidden_server,
@@ -23,7 +23,6 @@ from .minecraft import (
     write_server_properties,
 )
 from .rcon import RconClient
-from .storage import LocalCloudStorage
 from .vpn import join_zerotier
 from .web import _is_pid_alive, serve
 
@@ -63,7 +62,7 @@ def cmd_connect_info(_: argparse.Namespace) -> None:
 
 def publish_current_session(state: str = "active") -> None:
     config = load_config()
-    storage = LocalCloudStorage(config.cloud, config.world_id)
+    storage = make_storage(config)
     storage.publish_session(
         session_id=config.session_id,
         current_host=config.host_player,
@@ -82,7 +81,7 @@ def cmd_publish_session(args: argparse.Namespace) -> None:
 
 def cmd_session_info(_: argparse.Namespace) -> None:
     config = load_config()
-    storage = LocalCloudStorage(config.cloud, config.world_id)
+    storage = make_storage(config)
     try:
         info = storage.session()
     except FileNotFoundError as exc:
@@ -124,9 +123,23 @@ def cmd_join_vpn(_: argparse.Namespace) -> None:
     print(join_zerotier(config.zerotier_network_id))
 
 
+def cmd_configure_relay(args: argparse.Namespace) -> None:
+    config = load_config()
+    if not args.disable and not args.url:
+        raise SystemExit("configure-relay requires --url unless --disable is used.")
+    config.relay_url = "" if args.disable else args.url.rstrip("/")
+    config.relay_api_key = "" if args.disable else (args.api_key or config.relay_api_key)
+    save_config(config)
+    if args.disable:
+        print("Cloud relay disabled. Helper will use local filesystem storage.")
+    else:
+        print(f"Cloud relay set to {config.relay_url}")
+        print("API key saved." if config.relay_api_key else "No API key saved; relay must allow open access.")
+
+
 def cmd_upload_world(_: argparse.Namespace) -> None:
     config = load_config()
-    storage = LocalCloudStorage(config.cloud, config.world_id)
+    storage = make_storage(config)
     info = storage.upload_world(config.local_world, config.player_name)
     print(f"Uploaded snapshot {info.snapshot_id} for {info.world_id}")
 
@@ -189,7 +202,7 @@ def cmd_sync_world(_: argparse.Namespace) -> None:
 
 def upload_current_world() -> str:
     config = load_config()
-    storage = LocalCloudStorage(config.cloud, config.world_id)
+    storage = make_storage(config)
     info = storage.upload_world(config.local_world, config.player_name)
     return info.snapshot_id
 
@@ -213,7 +226,7 @@ def sync_current_world() -> str:
             client.command("save-on")
             
     # Phase 2: Async upload from the immutable mirror
-    storage = LocalCloudStorage(config.cloud, config.world_id)
+    storage = make_storage(config)
     info = storage.upload_world(staging_dir, config.player_name)
     return info.snapshot_id
 
@@ -221,7 +234,7 @@ def sync_current_world() -> str:
 def cmd_download_world(args: argparse.Namespace) -> None:
     config = load_config()
     destination = Path(args.destination).expanduser().resolve() if args.destination else config.local_world
-    storage = LocalCloudStorage(config.cloud, config.world_id)
+    storage = make_storage(config)
     info = storage.download_world(destination)
     print(f"Downloaded snapshot {info.snapshot_id} to {destination}")
 
@@ -229,7 +242,7 @@ def cmd_download_world(args: argparse.Namespace) -> None:
 def cmd_validate_cache(args: argparse.Namespace) -> None:
     config = load_config()
     world_path = Path(args.path).expanduser().resolve() if args.path else config.local_world
-    storage = LocalCloudStorage(config.cloud, config.world_id)
+    storage = make_storage(config)
     problems = storage.validate_world(world_path)
     if problems:
         print("Cache validation failed:")
@@ -241,7 +254,7 @@ def cmd_validate_cache(args: argparse.Namespace) -> None:
 
 def validate_config_world(config_path: Path) -> None:
     config = load_config(config_path)
-    storage = LocalCloudStorage(config.cloud, config.world_id)
+    storage = make_storage(config)
     problems = storage.validate_world(config.local_world)
     if problems:
         joined = "\n".join(f"- {problem}" for problem in problems)
@@ -291,7 +304,7 @@ def cmd_launch_server(args: argparse.Namespace) -> None:
             print(f"WARNING: Found foreign server pid={existing['pid']} (owner={owner}). Launching anyway may cause corruption.")
 
     # Upload current world to cloud BEFORE launch so standby has latest state
-    storage = LocalCloudStorage(config.cloud, config.world_id)
+    storage = make_storage(config)
     try:
         info = storage.upload_world(config.local_world, config.player_name)
         print(f"Synced world to cloud (snapshot {info.snapshot_id}) before launch.")
@@ -402,7 +415,7 @@ def cmd_manual_switch(args: argparse.Namespace) -> None:
     target_config = load_config(target_config_path)
     to_host = args.to_host or target_config.player_name
 
-    storage = LocalCloudStorage(source_config.cloud, source_config.world_id)
+    storage = make_storage(source_config)
     try:
         session = storage.session()
         if session.current_host != source_config.player_name:
@@ -454,7 +467,7 @@ def cmd_manual_switch(args: argparse.Namespace) -> None:
 
     # Re-load target config (source sync may have changed cloud state)
     target_config = load_config(target_config_path)
-    storage = LocalCloudStorage(target_config.cloud, target_config.world_id)
+    storage = make_storage(target_config)
     info = storage.download_world(target_config.local_world)
     print(f"Target downloaded snapshot {info.snapshot_id}.")
 
@@ -577,6 +590,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     vpn = sub.add_parser("join-vpn", help="Join configured ZeroTier network.")
     vpn.set_defaults(func=cmd_join_vpn)
+
+    relay = sub.add_parser("configure-relay", help="Enable or disable HTTP Cloud Relay storage.")
+    relay.add_argument("--url", required=False, help="Relay base URL, for example http://example.com:9000")
+    relay.add_argument("--api-key", default=None)
+    relay.add_argument("--disable", action="store_true")
+    relay.set_defaults(func=cmd_configure_relay)
 
     upload = sub.add_parser("upload-world", help="Upload local world to phase-one storage.")
     upload.set_defaults(func=cmd_upload_world)

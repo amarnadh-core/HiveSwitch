@@ -54,7 +54,9 @@ def _match_route(path: str) -> tuple[str | None, dict[str, str]]:
     return None, {}
 
 
-def make_handler(storage: RelayStorage, api_key: str):
+def make_handler(storage: RelayStorage, api_key: str,
+                 max_upload_bytes: int = 50 * 1024 * 1024,
+                 max_snapshots_per_world: int = 20):
     """Create a request handler class bound to the given storage and API key."""
 
     class RelayHandler(BaseHTTPRequestHandler):
@@ -111,61 +113,60 @@ def make_handler(storage: RelayStorage, api_key: str):
             path = urlparse(self.path).path
             route, params = _match_route(path)
 
-            if route == "health":
-                self._json(200, {"status": "ok", "time": time.time()})
+            try:
+                if route == "health":
+                    self._json(200, {"status": "ok", "time": time.time()})
 
-            elif route == "session":
-                data = storage.get_session(params["world_id"])
-                if data is None:
-                    self._json(404, {"error": "not_found", "message": "No session for this world"})
-                else:
-                    self._json(200, data)
+                elif route == "session":
+                    data = storage.get_session(params["world_id"])
+                    if data is None:
+                        self._json(404, {"error": "not_found", "message": "No session for this world"})
+                    else:
+                        self._json(200, data)
 
-            elif route == "latest":
-                data = storage.get_latest(params["world_id"])
-                if data is None:
-                    self._json(404, {"error": "not_found", "message": "No latest snapshot"})
-                else:
-                    self._json(200, data)
+                elif route == "latest":
+                    data = storage.get_latest(params["world_id"])
+                    if data is None:
+                        self._json(404, {"error": "not_found", "message": "No latest snapshot"})
+                    else:
+                        self._json(200, data)
 
-            elif route == "snapshot_list":
-                ids = storage.list_snapshots(params["world_id"])
-                self._json(200, {"snapshots": ids})
+                elif route == "snapshot_list":
+                    ids = storage.list_snapshots(params["world_id"])
+                    self._json(200, {"snapshots": ids})
 
-            elif route == "snapshot_meta":
-                data = storage.get_snapshot_meta(params["world_id"], params["snapshot_id"])
-                if data is None:
-                    self._json(404, {"error": "not_found"})
-                else:
-                    self._json(200, data)
+                elif route == "snapshot_meta":
+                    data = storage.get_snapshot_meta(params["world_id"], params["snapshot_id"])
+                    if data is None:
+                        self._json(404, {"error": "not_found"})
+                    else:
+                        self._json(200, data)
 
-            elif route == "snapshot_manifest":
-                data = storage.get_snapshot_manifest(params["world_id"], params["snapshot_id"])
-                if data is None:
-                    self._json(404, {"error": "not_found"})
-                else:
-                    self._json(200, data)
+                elif route == "snapshot_manifest":
+                    data = storage.get_snapshot_manifest(params["world_id"], params["snapshot_id"])
+                    if data is None:
+                        self._json(404, {"error": "not_found"})
+                    else:
+                        self._json(200, data)
 
-            elif route == "snapshot_file":
-                try:
+                elif route == "snapshot_file":
                     data = storage.get_file(params["world_id"], params["snapshot_id"], params["file_path"])
-                except ValueError as e:
-                    self._json(400, {"error": "bad_request", "message": str(e)})
-                    return
-                if data is None:
-                    self._json(404, {"error": "not_found"})
-                else:
-                    self._binary(200, data)
+                    if data is None:
+                        self._json(404, {"error": "not_found"})
+                    else:
+                        self._binary(200, data)
 
-            elif route == "election":
-                data = storage.get_election(params["world_id"])
-                if data is None:
-                    self._json(200, {"locked": False})
-                else:
-                    self._json(200, {"locked": True, **data})
+                elif route == "election":
+                    data = storage.get_election(params["world_id"])
+                    if data is None:
+                        self._json(200, {"locked": False})
+                    else:
+                        self._json(200, {"locked": True, **data})
 
-            else:
-                self._json(404, {"error": "not_found", "message": f"Unknown route: {path}"})
+                else:
+                    self._json(404, {"error": "not_found", "message": f"Unknown route: {path}"})
+            except ValueError as e:
+                self._json(400, {"error": "bad_request", "message": str(e)})
 
         # -- PUT ------------------------------------------------------------
 
@@ -201,7 +202,7 @@ def make_handler(storage: RelayStorage, api_key: str):
                 try:
                     storage.put_file(
                         params["world_id"], params["snapshot_id"],
-                        params["file_path"], body
+                        params["file_path"], body, max_upload_bytes
                     )
                 except ValueError as e:
                     self._json(400, {"error": "bad_request", "message": str(e)})
@@ -225,7 +226,7 @@ def make_handler(storage: RelayStorage, api_key: str):
                 sid = params["snapshot_id"]
                 storage.mark_snapshot_complete(wid, sid)
                 # Auto-cleanup old snapshots
-                deleted = storage.cleanup_snapshots(wid)
+                deleted = storage.cleanup_snapshots(wid, keep=max_snapshots_per_world)
                 self._json(200, {"status": "ok", "cleaned_up": deleted})
 
             elif route == "election":

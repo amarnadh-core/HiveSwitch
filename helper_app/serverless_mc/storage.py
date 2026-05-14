@@ -758,6 +758,51 @@ class LocalCloudStorage:
         if deleted:
             print(f"[CLEANUP] Removed {deleted} old snapshots")
 
+    # -- Election -----------------------------------------------------------
+
+    def try_election(self, candidate: str, **kwargs) -> tuple[bool, dict]:
+        lock_path = self.world_root / "election.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {"candidate": candidate, **kwargs, "time": time.time()}
+
+        try:
+            fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(fd, json.dumps(payload).encode("utf-8"))
+            os.close(fd)
+            return True, payload
+        except FileExistsError:
+            try:
+                text = lock_path.read_text(encoding="utf-8")
+                existing = json.loads(text) if text.strip() else {"time": lock_path.stat().st_mtime}
+                if time.time() - float(existing.get("time", 0)) > 60:
+                    lock_path.unlink()
+                    return self.try_election(candidate, **kwargs)
+                return False, existing
+            except Exception:
+                try:
+                    if time.time() - lock_path.stat().st_mtime > 60:
+                        lock_path.unlink()
+                        return self.try_election(candidate, **kwargs)
+                except OSError:
+                    pass
+                return False, {}
+
+    def release_election(self, candidate: str) -> bool:
+        lock_path = self.world_root / "election.lock"
+        if not lock_path.exists():
+            return True
+        try:
+            data = json.loads(lock_path.read_text(encoding="utf-8"))
+            if data.get("candidate") != candidate:
+                return False
+        except (json.JSONDecodeError, OSError):
+            pass
+        try:
+            lock_path.unlink()
+            return True
+        except OSError:
+            return False
+
     # -- Backward compat: validate_world ------------------------------------
 
     def validate_world(self, world_path: Path) -> list[str]:
